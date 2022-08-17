@@ -1,9 +1,76 @@
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+from __future__ import division
 import numpy as np
-from scipy import optimize
+import pycarl
+import pycarl.core
+import stormpy
+import stormpy.core
+import stormpy.info
+
+import pycarl
+import pycarl.core
+
+import stormpy.examples
+import stormpy.examples.files
 import matplotlib.pyplot as plt
+import stormpy._config as config
 from numpy import genfromtxt
+from scipy import optimize
+import numpy as np
+
+
+def parametric_model_checking(path, formula_str):
+    # Check support for parameters
+    if not config.storm_with_pars:
+        print("Support parameters is missing. Try building storm-pars.")
+        return
+
+    import stormpy.pars
+    from pycarl.formula import FormulaType, Relation
+    if stormpy.info.storm_ratfunc_use_cln():
+        import pycarl.cln.formula
+    else:
+        import pycarl.gmp.formula
+
+    prism_program = stormpy.parse_prism_program(path)
+    properties = stormpy.parse_properties_for_prism_program(formula_str, prism_program)
+    model = stormpy.build_parametric_model(prism_program, properties)
+
+    initial_state = model.initial_states[0]
+    result = stormpy.model_checking(model, properties[0])
+
+    # print("Result: {}".format(result.at(initial_state)))
+    #
+    # collector = stormpy.ConstraintCollector(model)
+    # print("Well formed constraints:")
+    # for formula in collector.wellformed_constraints:
+    #     print(formula.get_constraint())
+    # print("Graph preserving constraints:")
+    # for formula in collector.graph_preserving_constraints:
+    #     print(formula.get_constraint())
+
+    parameters = model.collect_probability_parameters()
+
+    # frf = pycarl.cln.FactorizedRationalFunction.evaluate(result.at(initial_state), point)
+    # frf = pycarl.cln.FactorizedRationalFunction.evaluate(result.at(initial_state), point)
+    # print(pycarl.cln.FactorizedRationalFunction)
+    # print(frf, type(frf))
+    # frf = result.at(initial_state)
+    # frf_result = frf.e
+
+    return result.at(initial_state), parameters
+
+
+def convert(s):
+    try:
+        return float(s)
+    except ValueError:
+        num, denom = s.split('/')
+        return float(num) / float(denom)
+
+
+def evaluateExpression(exp, Varlist):
+    EvaResult = pycarl.cln.FactorizedRationalFunction.evaluate(exp, Varlist)
+    print(EvaResult, type(EvaResult), convert(EvaResult))
 
 
 def obtaining_data_from_csv(path, colunm_value, skip_header_value):
@@ -70,16 +137,28 @@ def linear_prediction(model, horizon):
         predicted_x = i + predicted_index
         new_predicted_y = np.array(predicted_slope * predicted_x + predicted_intercept)
         predicted_y = np.vstack((predicted_y, new_predicted_y))
-    predicted_x = np.arange(predicted_index, predicted_index + prediction_horizon)[:, np.newaxis]
+    predicted_x = np.arange(predicted_index, predicted_index + horizon)[:, np.newaxis]
     return np.hstack((predicted_x, predicted_y))
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    ModelCheckerResult = parametric_model_checking("/Users/xinweifang/Documents/prism-4.6-osx64/SEAM2022/Example.pm",
+                                                   "P=?[F s=4]")
+    # ModelCheckerResult[0] : Expression  ModelCheckerResult[1] : List for parameters
+    print(ModelCheckerResult[0])
+    point = dict()
+    value = 0.4
+    for x in ModelCheckerResult[1]:
+        print(x.name)
+        point[x] = stormpy.RationalRF(value)
+    print(point)
+    evaluateExpression(ModelCheckerResult[0], point)
+
     # Hyper-parameters
     window_size_setting = 20
     N_setting = 5
-    residual_threashold_setting = 0.02
+    residual_threshold_setting = 0.02
     prediction_horizon = 50
     # loop for analysing and predicting each of parameter
     for i in range(1, 4):
@@ -87,17 +166,17 @@ if __name__ == '__main__':
         y_reading = eval(f"obtaining_data_from_csv('/Users/xinweifang/Desktop/data{i}.csv', 2, 1)")
         x_generating = np.arange(0, y_reading.size, 1, dtype=int)
         fitted_linear_model = piecewise_linear_analysis(x_generating, y_reading, window_size_setting, N_setting,
-                                                        residual_threashold_setting)
-    #     plt.figure()
-    #     plt.plot(x_generating, y_reading, "o")
-    #     for t in range(0, len(fitted_linear_model) - 1):
-    #         start = fitted_linear_model[t, 2]
-    #         end = fitted_linear_model[t + 1, 2]
-    #         xd = np.linspace(start, end)
-    #         plt.plot(xd, fitted_linear_model[t, 0] * xd + fitted_linear_model[t, 1])
-    #
-    #     globals()[f'predicted_variable_{i}'] = linear_prediction(fitted_linear_model, prediction_horizon)
-    # print(predicted_variable_1)
+                                                        residual_threshold_setting)
+        plt.figure()
+        plt.plot(x_generating, y_reading, "o")
+        for t in range(0, len(fitted_linear_model) - 1):
+            start = fitted_linear_model[t, 2]
+            end = fitted_linear_model[t + 1, 2]
+            xd = np.linspace(start, end)
+            plt.plot(xd, fitted_linear_model[t, 0] * xd + fitted_linear_model[t, 1])
+
+        globals()[f'predicted_variable_{i}'] = linear_prediction(fitted_linear_model, prediction_horizon)
+    print(predicted_variable_1)
     plt.show()
     # print(np.linspace(y_reading.size, y_reading.size+prediction_horizon).size)
     # plt.plot(x_generating, y_reading, "o")

@@ -2,7 +2,7 @@ from __future__ import division
 import stormpy.info
 
 import pycarl
-
+import csv
 import stormpy.examples.files
 import matplotlib.pyplot as plt
 import stormpy._config as config
@@ -166,10 +166,22 @@ def NormalizeData(data):
 
 def exp_function(x_range, t, sign, index_offset):
     if sign == "positive":
-        value = np.exp(x_range)
-        return NormalizeData(value)[range(index_offset, index_offset + t)]
+        return NormalizeData(np.exp(x_range))[range(index_offset, index_offset + t)]
     else:
         return NormalizeData(np.exp(-x_range))[range(index_offset, index_offset + t)]
+
+
+def linear_function(x_range, t, sign, index_offset):
+        rate = random.randint(1,100)
+        gain = random.randint(1,100)
+        if sign == "positive":
+            y = x_range * rate + gain
+            a = NormalizeData(y)[range(index_offset, index_offset + t)]
+            return y
+        else:
+            y = x_range * -rate + gain
+            a = NormalizeData(y)[range(index_offset, index_offset + t)]
+            return y
 
 
 def dataGenerator():
@@ -178,12 +190,16 @@ def dataGenerator():
     print(function_random_samples)
     function_random_trend = round(random.random())
     print(function_random_trend)
-    if round(random.random()) == 0:
+    if round(function_random_trend) == 0:
         trend = "positive"
     else:
         trend = "negative"
     y_reading_ref = np.array(exp_function(np.linspace(-1, 2, function_random_samples), len(idx), trend,
                                           random.randint(0, function_random_samples - len(idx))))
+    # y_reading_ref = np.array(linear_function(np.linspace(1, function_random_samples, function_random_samples), len(idx), trend, random.randint(0, function_random_samples - len(idx))))
+    with open('/Users/xinweifang/Desktop/y.csv', 'w', newline='') as csvfile:
+        my_writer = csv.writer(csvfile, delimiter=' ')
+        my_writer.writerow(y_reading_ref)
     # noise level added to the data
     # y_reading_ref = y_reading_ref + np.random.normal(0, 0.001, y_reading_ref.shape)
     y_reading = y_reading_ref[0:-prediction_horizon]
@@ -211,10 +227,10 @@ if __name__ == '__main__':
     model_parameters = ModelCheckerResult[1]
 
     # Hyper-parameters
-    window_size_setting = 50
+    window_size_setting = 500
     N_setting = 50  # Number of consecutive points above or below the residual_threshold_setting
     residual_threshold_setting = 0.05
-    prediction_horizon = 50
+    prediction_horizon = 500
     predicted_variable_set = {}
     reference_variable_set = {}
     # loop for analysing and predicting each of parameter
@@ -230,26 +246,30 @@ if __name__ == '__main__':
 
         plotgeneratedData(x_generating, y_reading, y_reading_ref, fitted_linear_model)
 
-    # # loops for checking the system-level property
-    # disruption_prediction = np.zeros(shape=(1, 2))
-    # disruption_reference = np.zeros(shape=(1, 2))
-    # for i in range(0, len(predicted_variable_set.get(1))):
-    #     point = dict()
-    #     ref_point = dict()
-    #     index = 1
-    #     for x in model_parameters:
-    #         point[x] = stormpy.RationalRF(predicted_variable_set.get(index)[i, 1])
-    #         ref_point[x] = stormpy.RationalRF(reference_variable_set.get(index)[i])
-    #         index = index + 1
-    #
-    #     disruption_prediction = np.vstack((disruption_prediction, np.array(
-    #         [predicted_variable_set.get(1)[i, 0], evaluateExpression(algebraic_formulae, point)])))
-    #     disruption_reference = np.vstack((disruption_reference, np.array(
-    #         [reference_variable_set.get(1)[i], evaluateExpression(algebraic_formulae, ref_point)])))
-    # disruption_prediction = np.delete(disruption_prediction, 0, 0)
-    # disruption_reference = np.delete(disruption_reference, 0, 0)
-    # plt.figure()
-    # plt.plot(disruption_prediction[:, 0], disruption_prediction[:, 1])
-    # plt.plot(disruption_prediction[:, 0], disruption_reference[:, 0])
-    # plt.legend(["Predicted", "reference"])
+    # loops for checking the system-level property
+    disruption_prediction = np.zeros(shape=(1, 2))
+    disruption_reference = np.zeros(shape=(1, 2))
+    plt.figure()
+    for i in range(0, len(predicted_variable_set.get(1))):
+        point = dict()
+        ref_point = dict()
+        index = 1
+        for x in model_parameters:
+            point[x] = stormpy.RationalRF(predicted_variable_set.get(index)[i, 1])
+            ref_point[x] = stormpy.RationalRF(reference_variable_set.get(index)[i])
+            index = index + 1
+
+        disruption_prediction = np.vstack((disruption_prediction, np.array(
+            [predicted_variable_set.get(1)[i, 0], evaluateExpression(algebraic_formulae, point)])))
+        disruption_reference = np.vstack((disruption_reference, np.array(
+            [reference_variable_set.get(1)[i], evaluateExpression(algebraic_formulae, ref_point)])))
+        for x in model_parameters:
+            plt.plot(i, ref_point[x] - point[x], "o")
+
+    disruption_prediction = np.delete(disruption_prediction, 0, 0)
+    disruption_reference = np.delete(disruption_reference, 0, 0)
+    plt.figure()
+    plt.plot(disruption_prediction[:, 0], disruption_prediction[:, 1])
+    plt.plot(disruption_prediction[:, 0], disruption_reference[:, 1])
+    plt.legend(["Predicted", "reference"])
     plt.show()

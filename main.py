@@ -1,4 +1,7 @@
 from __future__ import division
+
+import time
+
 import stormpy.info
 
 import pycarl
@@ -10,10 +13,9 @@ from numpy import genfromtxt
 from scipy import optimize
 import numpy as np
 import random
+from sklearn.metrics import confusion_matrix
 
 import pandas as pd
-from sklearn import preprocessing
-import timesynth as ts
 
 
 def parametric_model_checking(path, formula_str):
@@ -35,8 +37,9 @@ def parametric_model_checking(path, formula_str):
 
     initial_state = model.initial_states[0]
     result = stormpy.model_checking(model, properties[0])
-    parameters = model.collect_probability_parameters()
-    return result.at(initial_state), parameters
+    parameters = model.collect_all_parameters()
+    return result.at(
+        initial_state), parameters, model.collect_probability_parameters(), model.collect_reward_parameters()
 
 
 def convert(s):
@@ -52,9 +55,9 @@ def evaluateExpression(exp, Varlist):
     return convert(EvaResult)
 
 
-def obtaining_data_from_csv(path, colunm_value, skip_header_value):
-    my_data = genfromtxt(path, delimiter=',', skip_header=skip_header_value)
-    return my_data[:, colunm_value]
+# def obtaining_data_from_csv(path, colunm_value, skip_header_value):
+#     my_data = genfromtxt(path, delimiter=',', skip_header=skip_header_value)
+#     return my_data[:, colunm_value]
 
 
 def linear_fit(x, a, b):
@@ -69,207 +72,399 @@ def diff_value(num1, num2):
     return diff
 
 
-# # returning x value for when a new linear fitting is needed
-# def identifying_updating_index(linear_slope, linear_intercept, x, y, residual_threshold, N, end_of_window):
-#     i = end_of_window + 1
-#     counter_positive = 0
-#     counter_negative = 0
-#     while i < y.size:
-#         linear_result = linear_slope * i + linear_intercept
-#         if y[i] > linear_result and diff_value(y[i], linear_result) >= residual_threshold:
-#             counter_positive = counter_positive + 1
-#             counter_negative = 0
-#         if y[i] < linear_result and diff_value(y[i], linear_result) >= residual_threshold:
-#             counter_negative = counter_negative + 1
-#             counter_positive = 0
-#
-#         if counter_negative >= N:
-#             return i - counter_negative
-#         if counter_positive >= N:
-#             return i - counter_positive
-#
-#         i = i + 1
-#     return end_of_window
-
-
-# returning x value for when a new linear fitting is needed
-def identifying_updating_index(linear_slope, linear_intercept, x, y, residual_threshold, N, end_of_window):
-    i = end_of_window + 1
-    counter_positive = 0
-    counter_negative = 0
-    while i <= y.size:
-        linear_result = linear_slope * i + linear_intercept
-        if y[i-1] > linear_result:
-            counter_positive = counter_positive + 1
-            counter_negative = 0
-        if y[i-1] < linear_result:
-            counter_negative = counter_negative + 1
-            counter_positive = 0
-
-        if counter_negative >= N:
-            return i - counter_negative
-        if counter_positive >= N:
-            return i - counter_positive
-
-        if diff_value(y[i-1], linear_result) >= residual_threshold:
-            return i
-
-        i = i + 1
-    return i-1
-
-
-def piecewise_linear_analysis(x, y, window_size, N, residual_threashold):
-    fitting_index = 0
-    popt, pcov = optimize.curve_fit(linear_fit, x[fitting_index:fitting_index + window_size],
-                                      y[fitting_index:fitting_index + window_size])
+def linear_analysis(x, y):
+    popt, pcov = optimize.curve_fit(linear_fit, x, y)
     fit_a, fit_b = popt[0], popt[1]
     line_fitting_error = np.mean(np.diag(pcov))
-    linear_function = np.array([fit_a, fit_b, fitting_index, line_fitting_error])
-    while fitting_index <= y.size:
-        fitting_index = identifying_updating_index(fit_a, fit_b, x, y, residual_threashold, N,
-                                                   fitting_index + window_size)
-        if fitting_index <= len(y):
-            if window_size > y.size - fitting_index > 3:
-                popt, pcov = optimize.curve_fit(linear_fit, x[fitting_index:fitting_index + y.size - fitting_index],
-                                                  y[fitting_index:fitting_index + y.size - fitting_index])
-                fit_a, fit_b = popt[0], popt[1]
-                line_fitting_error = np.mean(np.sqrt(np.diag(pcov)))
-                new_function = np.array([fit_a, fit_b, fitting_index, line_fitting_error])
-                linear_function = np.vstack((linear_function, new_function))
-            elif y.size - fitting_index >= window_size:
-                popt, pcov = optimize.curve_fit(linear_fit, x[fitting_index:fitting_index + window_size],
-                                                  y[fitting_index:fitting_index + window_size])
-                fit_a, fit_b = popt[0], popt[1]
-                line_fitting_error = np.mean(np.sqrt(np.diag(pcov)))
-                new_function = np.array([fit_a, fit_b, fitting_index, line_fitting_error])
-                linear_function = np.vstack((linear_function, new_function))
-    return linear_function
+    return np.array([fit_a, fit_b, x[0], line_fitting_error])
 
 
-def linear_prediction(model, index, horizon):
-    predicted_slope = model[-1, 0]
-    predicted_intercept = model[-1, 1]
-    # predicted_index = model[-1, 2]
-    predicted_index = index
-    predicted_y = np.array(predicted_slope * predicted_index + predicted_intercept)
-    for i in range(1, horizon):
-        predicted_x = i + predicted_index
-        new_predicted_y = np.array(predicted_slope * predicted_x + predicted_intercept)
-        predicted_y = np.vstack((predicted_y, new_predicted_y))
-    predicted_x = np.arange(predicted_index, predicted_index + horizon)[:, np.newaxis]
-    return np.hstack((predicted_x, predicted_y))
+def normalise_in_range(x, a, b):
+    return (b - a) * (x - np.min(x)) / (np.max(x) - np.min(x)) + a
 
 
-def NormalizeData(data):
-    return (data - np.min(data)) / (np.max(data) - np.min(data))
+def linear_data_generator(xrange, sign, high, low):
+    rate = linear_slope_generator(sign)
+    y = xrange * rate
+    a = normalise_in_range(y, low, high)
+    return a
 
 
-def exp_function(x_range, t, sign, index_offset):
-    if sign == "positive":
-        return NormalizeData(np.exp(x_range))[range(index_offset, index_offset + t)]
-    else:
-        return NormalizeData(np.exp(-x_range))[range(index_offset, index_offset + t)]
-
-
-def linear_function(x_range, t, sign, index_offset):
-        rate = random.randint(1,100)
-        gain = random.randint(1,100)
-        if sign == "positive":
-            y = x_range * rate + gain
-            a = NormalizeData(y)[range(index_offset, index_offset + t)]
-            return y
+def exp_data_generator(xrange, sign, high, low):
+    tau = random.randint(round(len(xrange) * 0.5), round(len(xrange)) * 2)
+    if sign == "decrease":
+        if round(random.random()) == 0:
+            return normalise_in_range(np.exp(-xrange / tau), low, high)
         else:
-            y = x_range * -rate + gain
-            a = NormalizeData(y)[range(index_offset, index_offset + t)]
-            return y
+            return normalise_in_range(1 - np.exp(xrange / tau) / np.sum(np.exp(xrange / tau)), low, high)
+    elif sign == "increase":
+        if round(random.random()) == 0:
+            return normalise_in_range(-np.exp(-xrange / tau), low, high)
+        else:
+            return normalise_in_range(np.exp(xrange / tau) / np.sum(np.exp(xrange / tau)), low, high)
 
 
-def dataGenerator():
-    idx = pd.date_range("2022-05-02", periods=2000, freq="3s")
-    function_random_samples = random.randint(len(idx), 10000)
-    print(function_random_samples)
-    function_random_trend = round(random.random())
-    print(function_random_trend)
-    if round(function_random_trend) == 0:
-        trend = "positive"
-    else:
-        trend = "negative"
-    y_reading_ref = np.array(exp_function(np.linspace(-1, 2, function_random_samples), len(idx), trend,
-                                          random.randint(0, function_random_samples - len(idx))))
-    # y_reading_ref = np.array(linear_function(np.linspace(1, function_random_samples, function_random_samples), len(idx), trend, random.randint(0, function_random_samples - len(idx))))
-    with open('/Users/xinweifang/Desktop/y.csv', 'w', newline='') as csvfile:
-        my_writer = csv.writer(csvfile, delimiter=' ')
-        my_writer.writerow(y_reading_ref)
-    # noise level added to the data
-    # y_reading_ref = y_reading_ref + np.random.normal(0, 0.001, y_reading_ref.shape)
-    y_reading = y_reading_ref[0:-prediction_horizon]
+def curve1(in_array_):
+    return (in_array_ ** 3) + ((in_array_ * .9 - 4) ** 2)
+
+
+def curve2(in_array_):
+    return (20 * np.sin((in_array_) * 3 + 4) + 20) + curve1(in_array_)
+
+
+def find_nearest(array, value):
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    return idx
+
+
+def linear_slope_generator(trend):
+    if trend == "increase":
+        return np.random.exponential(scale=1.0, size=None)
+    elif trend == "decrease":
+        return -np.random.exponential(scale=1.0, size=None)
+
+
+def new_data(type, noise, default_trend, data_size, max_value, min_value):
+    trend = default_trend
+
+    if type == "linear":
+        y_reading_ref = np.array(linear_data_generator(np.linspace(1, data_size,
+                                                                   data_size), trend, max_value, min_value))
+    elif type == "non-linear":
+        y_reading_ref = np.array(exp_data_generator(np.linspace(1, data_size,
+                                                                data_size), trend, max_value, min_value))
+    a = diff_value(min_value, max_value)
+    if noise == 1:
+        y_reading_ref = y_reading_ref + np.random.normal(0, a * 0.01, y_reading_ref.shape)
+    elif noise == 2:
+        y_reading_ref = y_reading_ref + np.random.normal(0, a * 0.05, y_reading_ref.shape)
+    elif noise == 3:
+        y_reading_ref = y_reading_ref + np.random.normal(0, 0.01, y_reading_ref.shape)
+
+    # y_reading = y_reading_ref[0:-prediction_horizon]
+    y_reading = y_reading_ref
     x_generating = np.arange(0, y_reading.size, 1, dtype=int)
+
+    # plt.figure()
+    # plt.plot(x_generating,y_reading)
+
     return x_generating, y_reading, y_reading_ref
 
 
 def plotgeneratedData(x_generating, y_reading, y_reading_ref, fitted_linear_model):
     plt.figure()
     plt.plot(x_generating, y_reading, "o")
-    for t in range(0, len(fitted_linear_model)-1):
-        start = fitted_linear_model[t, 2]
-        end = fitted_linear_model[t + 1, 2]
-        xd = np.linspace(start, end)
-        plt.plot(xd, fitted_linear_model[t, 0] * xd + fitted_linear_model[t, 1])
-    final_xd = np.linspace(fitted_linear_model[t + 1, 2], len(y_reading_ref))
-    plt.plot(final_xd, fitted_linear_model[t+1, 0] * final_xd + fitted_linear_model[t+1, 1])
+    if fitted_linear_model.ndim > 1:
+        for t in range(0, len(fitted_linear_model) - 1):
+            start = fitted_linear_model[t, 2]
+            end = fitted_linear_model[t + 1, 2]
+            xd = np.linspace(start, end)
+            plt.plot(xd, fitted_linear_model[t, 0] * xd + fitted_linear_model[t, 1])
+        final_xd = np.linspace(fitted_linear_model[t + 1, 2], len(y_reading_ref))
+        plt.plot(final_xd, fitted_linear_model[t + 1, 0] * final_xd + fitted_linear_model[t + 1, 1])
+    else:
+        final_xd = np.linspace(fitted_linear_model[2], len(y_reading_ref))
+        plt.plot(final_xd, fitted_linear_model[0] * final_xd + fitted_linear_model[1])
+
+
+def PRESTO_evaluation(fitted_model, H, ref_data, idx):
+    predicted_result = dict()
+    reference_result = dict()
+    point = dict()
+    ref_point = dict()
+    disruption_prediction = np.zeros(shape=(1, 2))
+    disruption_reference = np.zeros(shape=(1, 2))
+
+    for i in model_parameters:
+        predicted_result[i] = 0
+        reference_result[i] = 0
+        if H > len(ref_data.get(i)[1]) - idx:
+            H = len(ref_data.get(i)[1]) - idx - 1
+
+    if H > 0:
+        for h in range(0, H):
+            for i in model_parameters:
+                if fitted_linear_model[i].ndim < 2:
+                    linear_cal = fitted_model.get(i)[0] * (h + idx) + fitted_model.get(i)[1]
+                    point[i] = stormpy.RationalRF(linear_cal)
+                    val = (h + idx - 1)
+                    ref_point[i] = stormpy.RationalRF(ref_data.get(i)[1][val])
+                    predicted_result[i] = np.vstack((predicted_result.get(i), linear_cal))
+                else:
+                    linear_cal = fitted_model.get(i)[-1][0] * (h + idx) + fitted_model.get(i)[-1][1]
+                    point[i] = stormpy.RationalRF(linear_cal)
+                    val = (h + idx - 1)
+                    ref_point[i] = stormpy.RationalRF(ref_data.get(i)[1][val])
+                    predicted_result[i] = np.vstack((predicted_result.get(i), linear_cal))
+                reference_result[i] = np.vstack((reference_result.get(i), ref_data.get(i)[1][(h + idx - 1)]))
+            disruption_prediction = np.vstack((disruption_prediction, np.array(
+                [(h + idx), evaluateExpression(algebraic_formulae, point)])))
+            disruption_reference = np.vstack((disruption_reference, np.array(
+                [(h + idx), evaluateExpression(algebraic_formulae, ref_point)])))
+        for i in model_parameters:
+            predicted_result[i] = np.delete(predicted_result[i], 0, 0)
+            reference_result[i] = np.delete(reference_result[i], 0, 0)
+        disruption_prediction = np.delete(disruption_prediction, 0, 0)
+        disruption_reference = np.delete(disruption_reference, 0, 0)
+
+        # plt.figure()
+        # plt.plot(disruption_prediction[:, 0], disruption_prediction[:, 1])
+        # plt.plot(disruption_reference[:, 0], disruption_reference[:, 1])
+        # plt.legend(["Predicted", "reference"])
+        fitting_index[i] = -1
+
+    return disruption_prediction, disruption_reference, idx, predicted_result, reference_result
+
+
+def paper_evaluation_result(requirement, system_level_prediction, system_level_ref):
+    ref = -1
+    predict = -1
+    ref_idx = -1
+    predict_idx = -1
+
+    if max(system_level_ref[:, 1]) > requirement > min(system_level_ref[:, 1]):
+        ref = 1
+        ref_idx = find_nearest(system_level_ref[:, 1], requirement)
+        # plt.figure()
+        # plt.plot(system_level_prediction[:, 0], system_level_prediction[:, 1])
+        # plt.plot(system_level_ref[:, 0], system_level_ref[:, 1])
+        # plt.legend(["Predicted", "reference"])
+    else:
+        ref = 0
+
+    if max(system_level_prediction[:, 1]) > requirement > min(system_level_prediction[:, 1]):
+        predict = 1
+        predict_idx = find_nearest(system_level_prediction[:, 1], requirement)
+    else:
+        predict = 0
+
+    return np.hstack((ref, predict)), np.hstack((ref_idx, predict_idx))
+
+
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
 
-    ModelCheckerResult = parametric_model_checking("/Users/xinweifang/Documents/prism-4.6-osx64/SEAM2022/Example.pm",
-                                                   "P=?[F s=4]")
+    # # Fruit picking model
+    ModelCheckerResult = parametric_model_checking("/Users/xinweifang/Documents/PRESTO/SEAM_example/Example.pm",
+                                                   "R{\"totalTime\"}=?[F s=5]")
+    requirement = 5
+    #  successfully complete the task : P=?[F s=4] r = 0.8
+    #   R{\"totalTime\"}=?[F s=5] r = 5
+    #   R{\"totalCost\"}=?[F s=5]
+
+    # # # RAD model
+    # ModelCheckerResult = parametric_model_checking(
+    #     "/Users/xinweifang/Documents/PRESTO/simplifiedRAD/RAD_model_modified.pm",
+    #     "R{\"totalTime\"}=? [ F \"end\" ]")
+    # #
+    # requirement = 13
+
+    # P =? [F \"complete\" ] R = 0.5
+    # P =? [ !\"fail\" U \"end\" ] R=0.5
+    # R{\"totalTime\"}=? [ F \"end\" ] R=13
+
     # ModelCheckerResult[0] : Expression  ModelCheckerResult[1] : List for parameters
     algebraic_formulae = ModelCheckerResult[0]
     model_parameters = ModelCheckerResult[1]
+    prob_parameters = ModelCheckerResult[2]
+    rwd_parameters = ModelCheckerResult[3]
 
-    # Hyper-parameters
-    window_size_setting = 500
-    N_setting = 50  # Number of consecutive points above or below the residual_threshold_setting
-    residual_threshold_setting = 0.05
-    prediction_horizon = 500
-    predicted_variable_set = {}
-    reference_variable_set = {}
-    # loop for analysing and predicting each of parameter
-    for i in range(1, len(model_parameters) + 1):
-        # Path to csv files, column number for which y data is stored, the number of header skip
-        # y_reading_ref = eval(f"obtaining_data_from_csv('/Users/xinweifang/Desktop/data{i}.csv', 2, 1)")
-        #  Generated from this code
-        x_generating, y_reading, y_reading_ref = dataGenerator()
-        fitted_linear_model = piecewise_linear_analysis(x_generating, y_reading, window_size_setting, N_setting,
-                                                        residual_threshold_setting)
-        predicted_variable_set[i] = linear_prediction(fitted_linear_model, len(y_reading), prediction_horizon)
-        reference_variable_set[i] = y_reading_ref[len(y_reading):len(y_reading) + prediction_horizon]
+    loopMatrix = np.hstack((-1, -1, -1, -1))
 
-        plotgeneratedData(x_generating, y_reading, y_reading_ref, fitted_linear_model)
+    # prediction_horizon = 360
+    # N_setting = 700  # Number of consecutive points above or below the residual_threshold_setting
+    counter = 0
+    for prediction_horizon in range(50, 3000, 500):
+        for N_setting in range(50, 3000, 500):
 
-    # loops for checking the system-level property
-    disruption_prediction = np.zeros(shape=(1, 2))
-    disruption_reference = np.zeros(shape=(1, 2))
-    plt.figure()
-    for i in range(0, len(predicted_variable_set.get(1))):
-        point = dict()
-        ref_point = dict()
-        index = 1
-        for x in model_parameters:
-            point[x] = stormpy.RationalRF(predicted_variable_set.get(index)[i, 1])
-            ref_point[x] = stormpy.RationalRF(reference_variable_set.get(index)[i])
-            index = index + 1
+            total_evaluation = 0
+            matrix = np.hstack((-1, -1))
+            accuracy = np.hstack((-1, -1))
+            system_level_prediction_idx = np.array(0)
+            evaluation_ending_flag = 0
+            counter += 1
+            print(counter, prediction_horizon, N_setting)
+            while evaluation_ending_flag < 43200:
+                # Hyper-parameters
 
-        disruption_prediction = np.vstack((disruption_prediction, np.array(
-            [predicted_variable_set.get(1)[i, 0], evaluateExpression(algebraic_formulae, point)])))
-        disruption_reference = np.vstack((disruption_reference, np.array(
-            [reference_variable_set.get(1)[i], evaluateExpression(algebraic_formulae, ref_point)])))
-        for x in model_parameters:
-            plt.plot(i, ref_point[x] - point[x], "o")
+                window_size_setting = prediction_horizon
 
-    disruption_prediction = np.delete(disruption_prediction, 0, 0)
-    disruption_reference = np.delete(disruption_reference, 0, 0)
-    plt.figure()
-    plt.plot(disruption_prediction[:, 0], disruption_prediction[:, 1])
-    plt.plot(disruption_prediction[:, 0], disruption_reference[:, 1])
-    plt.legend(["Predicted", "reference"])
-    plt.show()
+                residual_threshold_setting = 0.05
+
+                predicted_variable_set = {}
+                reference_variable_set = {}
+                size_of_linear_analysis_return = 4
+
+                # generating synthetic data for parameters
+                data = dict()
+                datasize = -1
+                data_size_temp = np.array(0)
+                for i in prob_parameters:
+                    # fruit picking
+                    data[i] = new_data("non-linear", noise=0, default_trend="decrease",
+                                       data_size=random.randint(7200, 10080),
+                                       max_value=1,
+                                       min_value=0.6)
+                    # data[i] = new_data("non-linear", noise=2, default_trend="decrease", data_size=random.randint(7200, 10080),
+                    #                    max_value=0.6,
+                    #                    min_value=0.2)
+                    # plt.figure()
+                    # plt.plot(data[i][0], data[i][1], "o")
+                    # print(len(data.get(i)[0]))
+                    data_size_temp = np.vstack((data_size_temp, len(data.get(i)[0])))
+                if len(rwd_parameters) > 0:
+                    for i in rwd_parameters:
+                        # fruit picking
+                        data[i] = new_data("non-linear", noise=0, default_trend="increase",
+                                           data_size=random.randint(7200, 10080),
+                                           max_value=7,
+                                           min_value=1)
+                        # data[i] = new_data("non-linear", noise=0, default_trend="increase",
+                        #                    data_size=random.randint(7200, 10080),
+                        #                    max_value=5,
+                        #                    min_value=1)
+                        data_size_temp = np.vstack((data_size_temp, len(data.get(i)[0])))
+                data_size_temp = np.delete(data_size_temp, 0, 0)
+                datasize = np.min(data_size_temp)
+
+                # simulate the run-time updating of sensor reading
+                fitting_index = dict()
+                counter_positive = dict()
+                counter_negative = dict()
+                fitted_linear_model = dict()
+                evaluation_index = dict()
+                # first run
+                t_time = time.time()
+                for i in model_parameters:
+                    counter_positive[i] = 0
+                    counter_negative[i] = 0
+                    fitting_index[i] = -1
+                    evaluation_index[i] = -1
+                    if datasize >= window_size_setting:
+                        fitted_linear_model[i] = linear_analysis(data.get(i)[0][0:window_size_setting],
+                                                                 data.get(i)[1][0: window_size_setting])
+                system_level_prediction, system_level_ref, origin = PRESTO_evaluation(fitted_linear_model,
+                                                                                      prediction_horizon, data,
+                                                                                      window_size_setting)[0:3]
+                total_evaluation = +1
+                temp1, temp2 = paper_evaluation_result(requirement, system_level_prediction, system_level_ref)
+
+                if temp1[0] == 0 and temp1[1] == 0:
+                    flag = 0
+                    while flag == 0:
+                        # simulate new data coming in
+                        last_value = 0
+                        if origin + prediction_horizon >= datasize - 1:
+                            last_value = datasize - 1
+                            flag = 1
+                        else:
+                            last_value = origin + prediction_horizon
+
+                        for data_sample in range(origin, last_value):
+                            for i in model_parameters:
+                                x = data.get(i)[0][data_sample]
+                                y = data.get(i)[1][data_sample]
+
+                                if fitted_linear_model[i].ndim < 2:
+                                    linear_result = fitted_linear_model[i][0] * x + fitted_linear_model[i][1]
+                                else:
+                                    linear_result = fitted_linear_model[i][-1][0] * x + fitted_linear_model[i][-1][1]
+
+                                if y > linear_result:
+                                    counter_positive[i] = counter_positive[i] + 1
+                                    counter_negative[i] = 0
+                                if y < linear_result:
+                                    counter_negative[i] = counter_negative[i] + 1
+                                    counter_positive[i] = 0
+                                if y == linear_result:
+                                    counter_negative[i] = 0
+                                    counter_positive[i] = 0
+
+                                if counter_negative[i] > N_setting:
+                                    fitting_index[i] = data_sample - counter_negative[i]
+                                if counter_positive[i] > N_setting:
+                                    fitting_index[i] = data_sample - counter_positive[i]
+
+                                #  this threshold value is not used in this version
+                                # if diff_value(y, linear_result) >= residual_threshold_setting:
+                                #     fitting_index[i] = data_sample
+
+                                if datasize - window_size_setting >= fitting_index.get(i) >= 0:
+                                    updated_linear_model = linear_analysis(
+                                        data.get(i)[0][fitting_index.get(i):fitting_index.get(i) + window_size_setting],
+                                        data.get(i)[1][fitting_index.get(i):fitting_index.get(i) + window_size_setting])
+                                    fitted_linear_model[i] = np.vstack((fitted_linear_model[i], updated_linear_model))
+                                    evaluation_index[i] = fitting_index.get(i) + window_size_setting
+                            #  This is for prediction system-level proerpty
+                            idx_previous = -1
+                            for i in model_parameters:
+                                if evaluation_index.get(i) > 0:
+                                    if idx_previous != evaluation_index.get(i):
+                                        system_level_prediction, system_level_ref, origin = PRESTO_evaluation(
+                                            fitted_linear_model,
+                                            prediction_horizon, data,
+                                            evaluation_index.get(i))[0:3]
+                                        total_evaluation = +1
+                                        temp1, temp2 = paper_evaluation_result(requirement, system_level_prediction,
+                                                                               system_level_ref)
+                                        matrix = np.vstack((matrix, temp1))
+                                        accuracy = np.vstack((accuracy, temp2))
+                                        system_level_prediction_idx = np.vstack((system_level_prediction_idx, origin))
+                                        if temp1[0] == 1 or temp1[1] == 1:
+                                            flag = 1
+
+                                        idx_previous = evaluation_index.get(i)
+                                        fitting_index[i] = -1
+                                        evaluation_index[i] = -1
+                                        counter_positive[i] = 0
+                                        counter_negative[i] = 0
+                            # for i in model_parameters:
+                            #     plotgeneratedData(data.get(i)[0], data.get(i)[1], data.get(i)[1], fitted_linear_model.get(i))
+                        # predict system-level again using when reaching the end of the previous prediction horizon
+                        # print(time.time() - t_time)
+                        if flag == 0:
+                            system_level_prediction, system_level_ref, origin = PRESTO_evaluation(fitted_linear_model,
+                                                                                                  prediction_horizon,
+                                                                                                  data,
+                                                                                                  last_value)[0:3]
+                            total_evaluation = +1
+                            temp1, temp2 = paper_evaluation_result(requirement, system_level_prediction,
+                                                                   system_level_ref)
+                            matrix = np.vstack((matrix, temp1))
+                            accuracy = np.vstack((accuracy, temp2))
+                            system_level_prediction_idx = np.vstack((system_level_prediction_idx, origin))
+                            if temp1[0] == 1 or temp1[1] == 1:
+                                flag = 1
+                else:
+                    # print("hi")
+                    matrix = np.vstack((matrix, temp1))
+                    accuracy = np.vstack((accuracy, temp2))
+                    system_level_prediction_idx = np.vstack((system_level_prediction_idx, origin))
+                evaluation_ending_flag = evaluation_ending_flag + system_level_prediction_idx[-1]
+                # print(evaluation_ending_flag)
+            matrix = np.delete(matrix, 0, 0)
+            accuracy = np.delete(accuracy, 0, 0)
+            system_level_prediction_idx = np.delete(system_level_prediction_idx, 0, 0)
+            # print(accuracy)
+            # print(confusion_matrix(matrix[:, 0], matrix[:, 1]))
+            # tn, fp, fn, tp
+
+            if not np.any(matrix[:, 0]) and not np.any(matrix[:, 1]):
+                fn = 0
+                tp = 0
+            else:
+                tn, fp, fn, tp = confusion_matrix(matrix[:, 0], matrix[:, 1]).ravel()
+            # print(confusion_matrix(matrix[:, 0], matrix[:, 1]).ravel())
+            # print(confusion_matrix(accuracy[:, 0], accuracy[:, 1]))
+            # print(matrix)
+            # np.savetxt("/Users/xinweifang/Documents/PRESTO/SEAM_example/Reachability/with_noise/matrix.csv", matrix, delimiter=",", fmt='%d')
+            # np.savetxt("/Users/xinweifang/Documents/PRESTO/SEAM_example/Reachability/with_noise/accuracy.csv", accuracy, delimiter=",", fmt='%d')
+            loopMatrix = np.vstack((loopMatrix, np.hstack((prediction_horizon, N_setting, fp, tp))))
+            # np.savetxt("//Users/xinweifang/Documents/PRESTO/plot/sensitivity/FruitPickingR1/R1_3.csv", loopMatrix,
+            #            delimiter=",", fmt='%d')
+            # print("done")
+            # plt.show()
+    loopMatrix = np.delete(loopMatrix, 0, 0)
+    np.savetxt("//Users/xinweifang/Documents/PRESTO/plot/sensitivity/FruitPickingR1/R2.csv", loopMatrix,
+               delimiter=",", fmt='%d')
